@@ -1,0 +1,16 @@
+{
+  "name": "yt-watch-report",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/dashboard.jsx --bundle --outfile=dashboard.bundle.js --minify --loader:.js=jsx --jsx=automatic"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^3.10.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
