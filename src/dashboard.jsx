@@ -11,6 +11,42 @@ const BASE_GENRES = [
 ];
 const COLORS = ["#ff0033", "#ff6b35", "#ffb800", "#4ade80", "#22d3ee", "#818cf8", "#e879f9", "#fb7185", "#a3e635", "#f472b6", "#60a5fa"];
 
+// Kept in sync with the same constants in background.js.
+const YT_API_KEY = "AIzaSyBa-hGus8GhPVBTE2KCQH1oDbPMNpzF0_I";
+const CATEGORY_MAP = {
+  "1": "Entertainment", "10": "Music", "15": "Entertainment", "17": "Entertainment",
+  "19": "Travel", "20": "Gaming", "22": "Vlogs", "23": "Entertainment", "24": "Entertainment",
+  "25": "News", "26": "Lifestyle", "27": "Education", "28": "Tech",
+};
+
+function extractVideoId(titleUrl) {
+  if (!titleUrl) return null;
+  try {
+    const u = new URL(titleUrl);
+    if (u.pathname === "/watch") return { id: u.searchParams.get("v"), isShort: false };
+    const shortsMatch = u.pathname.match(/^\/shorts\/([^/?]+)/);
+    if (shortsMatch) return { id: shortsMatch[1], isShort: true };
+  } catch {
+    // not a parseable URL — skip
+  }
+  return null;
+}
+
+async function fetchCategoriesBatch(videoIds) {
+  // videos.list accepts up to 50 ids per call.
+  const categoryById = {};
+  for (let i = 0; i < videoIds.length; i += 50) {
+    const chunk = videoIds.slice(i, i + 50);
+    const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${chunk.join(",")}&key=${YT_API_KEY}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    (data.items || []).forEach((item) => {
+      categoryById[item.id] = item.snippet.categoryId;
+    });
+  }
+  return categoryById;
+}
+
 function Bars({ title, data }) {
   if (data.length === 0) {
     return (
@@ -38,10 +74,38 @@ function Bars({ title, data }) {
   );
 }
 
+function ImportControl({ importStatus, onFile }) {
+  return (
+    <div className="import-box">
+      <label className="filter-btn import-btn">
+        {importStatus === "running" ? "Importing..." : "Import Google Takeout"}
+        <input
+          type="file"
+          accept="application/json"
+          onChange={onFile}
+          disabled={importStatus === "running"}
+          style={{ display: "none" }}
+        />
+      </label>
+      {importStatus && importStatus !== "running" && (
+        <div className="import-status">{importStatus}</div>
+      )}
+      <div className="hint" style={{ marginTop: 6 }}>
+        Get your real watch history from{" "}
+        <a href="https://takeout.google.com/settings/takeout" target="_blank" rel="noreferrer">
+          Google Takeout
+        </a>{" "}
+        (select only "YouTube and YouTube Music" → history), then upload the watch-history.json file here.
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [history, setHistory] = useState(null); // null = loading
   const [genres, setGenres] = useState(BASE_GENRES);
   const [range, setRange] = useState("week");
+  const [importStatus, setImportStatus] = useState(null); // null | "running" | "done" | error string
 
   useEffect(() => {
     chrome.storage.local.get(["watchHistory", "customGenres"], ({ watchHistory = [], customGenres = [] }) => {
@@ -49,6 +113,67 @@ function App() {
       setGenres([...BASE_GENRES, ...customGenres.filter((g) => !BASE_GENRES.includes(g))]);
     });
   }, []);
+
+  async function handleTakeoutFile(e) {
+    const file = e.target.files[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+
+    setImportStatus("running");
+    try {
+      const text = await file.text();
+      const raw = JSON.parse(text);
+
+      // Google Takeout's watch-history.json is a flat array of entries like:
+      // { title: "Watched X", titleUrl: "https://www.youtube.com/watch?v=...",
+      //   subtitles: [{ name: "Channel Name" }], time: "2024-01-01T12:00:00Z" }
+      const parsed = raw
+        .map((item) => {
+          const parsedUrl = extractVideoId(item.titleUrl);
+          if (!parsedUrl || !parsedUrl.id) return null;
+          const watchedAt = item.time ? new Date(item.time).getTime() : null;
+          if (!watchedAt) return null;
+          return {
+            videoId: parsedUrl.id,
+            isShort: parsedUrl.isShort,
+            title: (item.title || "").replace(/^Watched /, ""),
+            channelTitle: item.subtitles?.[0]?.name || "Unknown",
+            watchedAt,
+          };
+        })
+        .filter(Boolean);
+
+      if (parsed.length === 0) {
+        setImportStatus("No YouTube watch entries found in that file.");
+        return;
+      }
+
+      const uniqueIds = [...new Set(parsed.map((p) => p.videoId))];
+      const categoryById = await fetchCategoriesBatch(uniqueIds);
+      const { genreOverrides = {} } = await chrome.storage.local.get("genreOverrides");
+
+      const imported = parsed.map((p) => ({
+        videoId: p.videoId,
+        title: p.title,
+        channelTitle: p.channelTitle,
+        isShort: p.isShort,
+        watchedAt: p.watchedAt,
+        genre: genreOverrides[p.videoId] || CATEGORY_MAP[categoryById[p.videoId]] || "Other",
+      }));
+
+      // Avoid duplicating entries already tracked live (same video + same
+      // watch timestamp).
+      const existingKeys = new Set(history.map((e) => `${e.videoId}_${e.watchedAt}`));
+      const newOnes = imported.filter((e) => !existingKeys.has(`${e.videoId}_${e.watchedAt}`));
+
+      const merged = [...history, ...newOnes];
+      setHistory(merged);
+      await chrome.storage.local.set({ watchHistory: merged });
+      setImportStatus(`Imported ${newOnes.length} watch${newOnes.length === 1 ? "" : "es"} (${parsed.length - newOnes.length} already tracked).`);
+    } catch (err) {
+      setImportStatus(`Import failed: ${err.message}`);
+    }
+  }
 
   const filtered = useMemo(() => {
     if (!history) return [];
@@ -107,8 +232,9 @@ function App() {
 
   if (history.length === 0) {
     return (
-      <div className="empty" style={{ marginTop: 40 }}>
-        No watch history yet — go watch something on YouTube, then come back here.
+      <div style={{ marginTop: 40 }}>
+        <div className="empty">No watch history yet — go watch something on YouTube, then come back here.</div>
+        <ImportControl importStatus={importStatus} onFile={handleTakeoutFile} />
       </div>
     );
   }
@@ -128,6 +254,7 @@ function App() {
         ))}
       </div>
       <div className="summary">{filtered.length} video{filtered.length === 1 ? "" : "s"} watched</div>
+      <ImportControl importStatus={importStatus} onFile={handleTakeoutFile} />
 
       <Bars title="By Genre" data={genreData} />
       <Bars title="Top Creators" data={creatorData} />
