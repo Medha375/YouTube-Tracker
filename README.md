@@ -1,5 +1,8 @@
 # YT Watch Report 🎥📊
 
+<img width="1321" height="862" alt="image" src="https://github.com/user-attachments/assets/1d6605bf-aa8c-480b-ba3e-d0e9b9186e45" />
+<img width="1321" height="862" alt="image" src="https://github.com/user-attachments/assets/e83b2672-c4a6-4cdb-96bc-da1d89977e61" />
+
 I watch a *lot* of random stuff on YouTube — some days it's system design videos, some days it's a two-hour rabbit hole of unrelated Shorts — and I got curious about what that actually adds up to over a week or a month. So I built this instead of just wondering about it.
 
 It's a Chrome extension that quietly tracks what you watch (long-form + Shorts) and turns it into a little personal report: genre breakdown, top creators, filterable by week/month/all-time. If it gets a video's genre wrong, you can just fix it — and it remembers your fix.
